@@ -20,6 +20,9 @@ public final class Authentication {
     
     public static let dateFormatter = ISO8601DateFormatter()
     
+    /// Optional progress log hook, used by the app to show where sign-in stops.
+    public nonisolated(unsafe) static var log: ((String) -> Void)? = nil
+    
     public static func authenticate(
         appleID unsanitizedAppleID: String,
         password: String,
@@ -131,6 +134,7 @@ public final class Authentication {
         if authType == nil, (statusDictionary["hsc"] as? Int) == 409 {
             authType = "pushedCode"
         }
+        log?("login reply: au=\(authType ?? "nil") hsc=\(String(describing: statusDictionary["hsc"])) twoFactorHandled=\(twoFactorHandled)")
         switch authType {
         case "pushedCode":
             guard let verificationHandler = verificationHandler, !twoFactorHandled else {
@@ -216,6 +220,7 @@ public final class Authentication {
             ]
             
             
+            log?("requesting app token")
             let token = try await fetchAuthToken(
                 app: app,
                 parameters: tokenParameters,
@@ -229,6 +234,7 @@ public final class Authentication {
                 anisetteData: anisetteData
             )
             
+            log?("fetching account")
             let account = try await AppleAPI.shared.fetchAccount(session: session)
             return (account, session)
         }
@@ -436,6 +442,7 @@ public final class Authentication {
         )
         verifyRequest.allHTTPHeaderFields?["security-code"] = code
         
+        log?("submitting 2FA code")
         let (data, _) = try await AppleAPI.shared.session.data(for: verifyRequest)
         
         guard let responseDictionary = try PropertyListSerialization.propertyList(
@@ -446,6 +453,7 @@ public final class Authentication {
         }
         
         let errorCode = responseDictionary["ec"] as? Int ?? 0
+        log?("2FA validate reply ec=\(errorCode)")
         guard errorCode == 0 else {
             switch errorCode {
             case -21669:

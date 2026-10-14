@@ -24,7 +24,8 @@ public final class Authentication {
         appleID unsanitizedAppleID: String,
         password: String,
         anisetteData: AnisetteData,
-        verificationHandler: ((@escaping (String?) -> Void) async -> Void)? = nil
+        verificationHandler: ((@escaping (String?) -> Void) async -> Void)? = nil,
+        twoFactorHandled: Bool = false
     ) async throws -> (Account, AppleAPISession) {
         let sanitizedAppleID = unsanitizedAppleID.lowercased()
         
@@ -125,8 +126,33 @@ public final class Authentication {
         
         context.dsid = dsid
         
-        let authType = statusDictionary["au"] as? String
+        var authType = statusDictionary["au"] as? String
+        // Apple now answers with hsc 409 and no "au": the code was already pushed to the trusted devices.
+        if authType == nil, (statusDictionary["hsc"] as? Int) == 409 {
+            authType = "pushedCode"
+        }
         switch authType {
+        case "pushedCode":
+            guard let verificationHandler = verificationHandler, !twoFactorHandled else {
+                throw AppleAPIError.requiresTwoFactorAuthentication
+            }
+            
+            try await requestTrustedDeviceTwoFactorCode(
+                dsid: dsid,
+                idmsToken: idmsToken,
+                anisetteData: anisetteData,
+                verificationHandler: verificationHandler,
+                codeAlreadySent: true
+            )
+            
+            return try await authenticate(
+                appleID: unsanitizedAppleID,
+                password: password,
+                anisetteData: anisetteData,
+                verificationHandler: verificationHandler,
+                twoFactorHandled: true
+            )
+            
         case "trustedDeviceSecondaryAuth":
             guard let verificationHandler = verificationHandler else {
                 throw AppleAPIError.requiresTwoFactorAuthentication
@@ -373,7 +399,8 @@ public final class Authentication {
         dsid: String,
         idmsToken: String,
         anisetteData: AnisetteData,
-        verificationHandler: @escaping (@escaping (String?) -> Void) async -> Void
+        verificationHandler: @escaping (@escaping (String?) -> Void) async -> Void,
+        codeAlreadySent: Bool = false
     ) async throws {
         let requestURL = URL(string: "https://gsa.apple.com/auth/verify/trusteddevice")!
         let verifyURL = URL(string: "https://gsa.apple.com/grandslam/GsService2/validate")!
@@ -385,7 +412,9 @@ public final class Authentication {
             anisetteData: anisetteData
         )
         
-        let (_, _) = try await AppleAPI.shared.session.data(for: request)
+        if !codeAlreadySent {
+            let (_, _) = try await AppleAPI.shared.session.data(for: request)
+        }
         
         let verificationCode = try await withCheckedThrowingContinuation { continuation in
             Task {
